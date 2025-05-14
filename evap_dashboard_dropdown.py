@@ -4,25 +4,33 @@ import plotly.express as px
 from datetime import datetime
 
 st.set_page_config(page_title="EVAP KPI Summary Dashboard", layout="wide")
+st.markdown('<style>body {background-color: #e8f5e9;}</style>', unsafe_allow_html=True)
 
-# ระบบล็อกอิน
-
+# ระบบล็อกอินแบบ 2 สิทธิ์: admin/user
 def login():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+        st.session_state['role'] = None
 
     if not st.session_state['logged_in']:
         st.title("EVAP KPI Dashboard")
         password = st.text_input("กรุณาใส่รหัสผ่าน", type="password")
         login_button = st.button("เข้าสู่ระบบ")
 
-        if login_button and password == "1234":
-            st.session_state['logged_in'] = True
-            st.success("เข้าสู่ระบบสำเร็จ กำลังโหลด Dashboard...")
-            st.rerun()
-        elif login_button:
-            st.error("รหัสผ่านไม่ถูกต้อง")
-            st.stop()
+        if login_button:
+            if password == "UT1234":
+                st.session_state['logged_in'] = True
+                st.session_state['role'] = 'admin'
+                st.success("เข้าสู่ระบบในฐานะแอดมิน")
+                st.rerun()
+            elif password == "1234":
+                st.session_state['logged_in'] = True
+                st.session_state['role'] = 'user'
+                st.success("เข้าสู่ระบบในฐานะผู้ใช้ทั่วไป")
+                st.rerun()
+            else:
+                st.error("รหัสผ่านไม่ถูกต้อง")
+                st.stop()
 
 login()
 
@@ -57,7 +65,7 @@ if st.session_state['logged_in']:
         "https://docs.google.com/spreadsheets/d/1hRlVqhagzaD3mIbsZan9_3yKV3LtumZ-oFS2W6mWzuk/export?format=csv"
     ]
 
-    zone_mapping = ['BL-PP']*3 + ['CT-PP']*9 + ['IND-BL']*4 + ['IND-CT']*6
+    zone_mapping = ['PP-BL']*3 + ['PP-CT']*9 + ['IND-BL']*4 + ['IND-CT']*6
     machine_mapping = ['No.1', 'No.2', 'No.3'] + ['No.1', 'No.2', 'No.3', 'No.4', 'No.5', 'No.6', 'No.7', 'No.8', 'No.9'] + ['No.1', 'No.2', 'No.3', 'No.4'] + ['No.1', 'No.2', 'No.3', 'No.4', 'No.5', 'No.6']
 
     all_data = []
@@ -79,43 +87,46 @@ if st.session_state['logged_in']:
         df_all['Date'] = pd.to_datetime(df_all['ประทับเวลา'], errors='coerce')
         df_all['Month'] = df_all['Date'].dt.to_period('M').astype(str)
         df_all['Day'] = df_all['Date'].dt.date
+        df_all['Year'] = df_all['Date'].dt.year
 
     check_cols = [col for col in df_all.columns if 'ตรวจเช็ค' in col]
     if not check_cols:
         st.warning("ไม่พบข้อมูลการตรวจเช็ค")
         st.stop()
 
-    melted = df_all.melt(id_vars=['Zone', 'Machine', 'Month', 'Day'], value_vars=check_cols, var_name='Check Item', value_name='Status')
+    melted = df_all.melt(id_vars=['Zone', 'Machine', 'Month', 'Day', 'Year'], value_vars=check_cols, var_name='Check Item', value_name='Status')
     melted = melted[melted['Status'].isin(['ปกติ', 'ผิดปกติ'])]
 
     st.title("วิเคราะห์ KPI รายเดือนแยกตามโซน")
-    zones = sorted(melted['Zone'].unique().tolist())
+    zones = sorted(melted['Zone'].unique().tolist(), key=lambda x: ('' if 'PP' in x else 'Z') + x)
     selected_zone = st.selectbox("เลือกโซน", zones)
     months = sorted(melted['Month'].dropna().unique().tolist())
     selected_month = st.selectbox("เลือกเดือน", months)
+    month_count = melted[(melted['Zone'] == selected_zone) & (melted['Month'] == selected_month)].shape[0]
+    st.markdown(f'**เดือนนี้มีการตรวจทั้งหมด {month_count} ครั้ง**')
 
     zone_df = melted[(melted['Zone'] == selected_zone) & (melted['Month'] == selected_month)]
+    latest_date = zone_df['Day'].max()
+    st.markdown(f'**วันที่ตรวจล่าสุดของเดือนนี้: {latest_date.strftime("%d/%m/%Y")}**')
+
     if zone_df.empty:
         st.warning("ไม่มีข้อมูลสำหรับโซนและเดือนที่เลือก")
         st.stop()
 
-    # KPI รวมของเครื่องในโซน
     kpi_by_machine = zone_df.groupby(['Machine', 'Status']).size().reset_index(name='Count')
     total_machine = kpi_by_machine.groupby('Machine')['Count'].transform('sum')
     kpi_by_machine['Percent'] = (kpi_by_machine['Count'] / total_machine * 100).round(2)
 
-    st.subheader(f"KPI เครื่องทั้งหมดในโซน {selected_zone} ประจำเดือน {selected_month}")
     fig_bar = px.bar(
         kpi_by_machine,
         x='Machine',
         y='Percent',
         color='Status',
         color_discrete_map={'ปกติ': 'blue', 'ผิดปกติ': 'red'},
-        barmode='group',
-        text='Percent',
-        title="กราฟแท่งแสดงเปอร์เซ็นต์สถานะของแต่ละเครื่อง"
+        barmode='stack',
+        text='Percent'
     )
-    fig_bar.update_traces(texttemplate='%{text}%', textposition='outside')
+    fig_bar.update_traces(texttemplate='%{text}%', textposition='inside', textfont=dict(size=16))
     fig_bar.add_shape(
         type='line',
         x0=-0.5, x1=len(kpi_by_machine['Machine'].unique()) - 0.5,
@@ -123,23 +134,43 @@ if st.session_state['logged_in']:
         line=dict(color='black', width=2, dash='dash'),
         xref='x', yref='y'
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
+    fig_bar.update_yaxes(range=[0, 100])
 
-    # รวมข้อมูล Pie
     pie_summary = zone_df.groupby(['Status']).size().reset_index(name='Count')
     pie_total = pie_summary['Count'].sum()
     pie_summary['Percent'] = (pie_summary['Count'] / pie_total * 100).round(2)
 
-    st.subheader("สรุปสถานะทั้งหมดในโซนเป็นเปอร์เซ็นต์")
     fig_pie = px.pie(pie_summary, names='Status', values='Percent', color='Status',
-                    color_discrete_map={'ปกติ': 'blue', 'ผิดปกติ': 'red'},
-                    title="สัดส่วนปกติ/ผิดปกติ ทั้งหมดในโซน")
-    st.plotly_chart(fig_pie, use_container_width=True)
+                    color_discrete_map={'ปกติ': 'blue', 'ผิดปกติ': 'red'})
 
-    # กราฟ Time Series รายวันในเดือน
-    st.subheader("แนวโน้มสถานะรายวัน")
-    ts_df = zone_df.groupby(['Day', 'Status']).size().reset_index(name='Count')
-    fig_line = px.line(ts_df, x='Day', y='Count', color='Status', markers=True,
-                       color_discrete_map={'ปกติ': 'blue', 'ผิดปกติ': 'red'},
-                       title="จำนวนรายการปกติ/ผิดปกติ ตามวัน")
-    st.plotly_chart(fig_line, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(fig_bar, use_container_width=True)
+    with col2:
+        st.subheader("สรุปสถานะทั้งหมดในโซนเป็นเปอร์เซ็นต์")
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    st.subheader("เปรียบเทียบจำนวนการตรวจในแต่ละเดือน แยกตามปี")
+    monthly_compare = melted[melted['Zone'] == selected_zone]
+    monthly_compare['Year'] = monthly_compare['Year'].astype(int)
+    compare_df = monthly_compare.groupby(['Year', 'Month']).size().reset_index(name='Count')
+    fig_compare = px.bar(compare_df, x='Month', y='Count', color='Year', barmode='group')
+    st.plotly_chart(fig_compare, use_container_width=True)
+
+    st.subheader("แนวโน้มการตรวจแบบ Time Series (จากปี 2025 เป็นต้นไป)")
+    selected_zone_ts = st.selectbox("เลือกโซนสำหรับ Time Series", zones, key="zone_ts")
+    ts_df = melted[(melted['Zone'] == selected_zone_ts) & (melted['Year'] >= 2025)]
+    ts_daily = ts_df.groupby('Day').size().reset_index(name='Check Count')
+
+    if not ts_daily.empty:
+        fig_ts = px.line(
+            ts_daily,
+            x='Day',
+            y='Check Count',
+            title=f'แนวโน้มจำนวนการตรวจรายวันของโซน {selected_zone_ts} (ตั้งแต่ปี 2025)',
+            markers=True
+        )
+        fig_ts.update_traces(line=dict(width=3))
+        st.plotly_chart(fig_ts, use_container_width=True)
+    else:
+        st.info("ยังไม่มีข้อมูลของโซนนี้ตั้งแต่ปี 2025 เป็นต้นไป")
