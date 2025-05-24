@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <title>EVAP Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@1.4.0"></script>
+  <style>
+    body {
+      font-family: 'Kanit', sans-serif;
+      background: #f0cef1;
+      margin: 0;
+      padding: 20px;
+    }
+    h2 {
+      text-align: center;
+      color: #0f0111;
+    }
+    .filters {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    select {
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 16px;
+      margin: 0 10px;
+    }
+    .info-cards {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .info-card {
+      background: #e7e0f2;
+      border-radius: 16px;
+      padding: 16px;
+      text-align: center;
+      width: 220px;
+      height: 120px;
+      box-shadow: 0 2px 6px #cf4444c4;
+      
+    }
+    .info-card h4 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .info-card p {
+      font-size: 32px;
+      margin: 8px 0 0;
+      font-weight: bold;
+    }
+    .charts {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      width: 600px;
+    }
+    canvas {
+      width: 100% !important;
+      height: 340px !important;
+    }
+  </style>
+</head>
+<body>
+  <h2>Relibility of <b>EVAP</b> system</h2>
+  <div class="filters">
+    <select id="zoneDropdown"></select>
+    <select id="monthDropdown"></select>
+  </div>
+
+  <div class="info-cards">
+    <div class="info-card"><h4>จำนวนครั้งที่ตรวจ:</h4><p id="totalCount">-</p></div>
+    <div class="info-card"><h4>ปกติ:</h4><p id="normalCount">-</p></div>
+    <div class="info-card"><h4>ผิดปกติ:</h4><p id="abnormalCount">-</p></div>
+    <div class="info-card"><h4>Relibility:</h4><p id="zoneKPI">-</p></div>
+    <div class="info-card"><h4>ตรวจเช็คสะสม:</h4><p id="totalInZone">-</p></div>
+    <div class="info-card"><h4>วันตรวจล่าสุด:</h4><p id="latestDate">-</p></div>
+  </div>
+
+  <div class="charts">
+    <div class="card"><canvas id="barMachine"></canvas></div>
+    <div class="card"><canvas id="pieOverall"></canvas></div>
+  </div>
+
+  <div class="charts">
+    <div class="card"><canvas id="lineZoneSummary"></canvas></div>
+  </div>
+
+  <script>
+    Chart.register(ChartDataLabels, window['chartjs-plugin-annotation']);
+    let rawData = []
+    let charts = []
+
+    async function loadData() {
+      const res = await fetch("/api/data")
+      rawData = await res.json()
+
+      const monthsTH = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
+      rawData.forEach(d => {
+        if (d['วันที่']) {
+          const dt = new Date(d['วันที่'])
+          d['เดือนปี'] = `${monthsTH[dt.getMonth()]} ${dt.getFullYear()}`
+          d['dateObj'] = dt
+          d['เดือน'] = `${dt.getFullYear()}-${(dt.getMonth()+1).toString().padStart(2, '0')}`
+        }
+      })
+
+      const zones = [...new Set(rawData.map(d => d["โซน"]))]
+      const monthYears = [...new Set(rawData.map(d => d["เดือนปี"]))]
+
+      document.getElementById("zoneDropdown").innerHTML = zones.map(z => `<option>${z}</option>`).join("")
+      document.getElementById("monthDropdown").innerHTML = monthYears.map(m => `<option>${m}</option>`).join("")
+
+      renderCharts()
+      document.getElementById("zoneDropdown").addEventListener("change", renderCharts)
+      document.getElementById("monthDropdown").addEventListener("change", renderCharts)
+    }
+
+    function renderCharts() {
+      const zone = document.getElementById("zoneDropdown").value
+      const monthYear = document.getElementById("monthDropdown").value
+      charts.forEach(c => c.destroy())
+      charts = []
+
+      const filtered = rawData.filter(d => d["โซน"] === zone && d["เดือนปี"] === monthYear)
+      const normal = filtered.filter(d => d["สถานะ"] === "ปกติ").length
+      const abnormal = filtered.filter(d => d["สถานะ"] === "ผิดปกติ").length
+      const total = normal + abnormal
+      const kpi = total > 0 ? ((normal / total) * 100).toFixed(1) + '%' : '-'
+      const latestDate = filtered.reduce((latest, d) => d.dateObj > latest ? d.dateObj : latest, new Date(0))
+
+      document.getElementById("totalCount").textContent = total
+      document.getElementById("normalCount").textContent = normal
+      document.getElementById("abnormalCount").textContent = abnormal
+      document.getElementById("zoneKPI").textContent = kpi
+      document.getElementById("latestDate").textContent = latestDate.getTime() > 0 ? latestDate.toLocaleDateString('th-TH') : '-'
+
+      const zoneAll = rawData.filter(d => d["โซน"] === zone)
+      document.getElementById("totalInZone").textContent = zoneAll.length
+
+      const machines = [...new Set(filtered.map(d => d["เครื่อง"]))].sort((a, b) => parseInt(a.replace("เครื่อง ", "")) - parseInt(b.replace("เครื่อง ", "")))
+      const normalData = machines.map(m => filtered.filter(d => d["เครื่อง"] === m && d["สถานะ"] === "ปกติ").length)
+      const abnormalData = machines.map(m => filtered.filter(d => d["เครื่อง"] === m && d["สถานะ"] === "ผิดปกติ").length)
+      const totalPerMachine = machines.map((_, i) => normalData[i] + abnormalData[i])
+      const normalPercent = machines.map((_, i) => totalPerMachine[i] > 0 ? (normalData[i] / totalPerMachine[i] * 100).toFixed(1) : 0)
+      const abnormalPercent = machines.map((_, i) => totalPerMachine[i] > 0 ? (abnormalData[i] / totalPerMachine[i] * 100).toFixed(1) : 0)
+
+      const barChart = new Chart(barMachine, {
+        type: 'bar',
+        data: {
+          labels: machines,
+          datasets: [
+            { label: "% ปกติ", backgroundColor: "#ffcc80", data: normalPercent, stack: 'stack1', order: 2 },
+            { label: "% ผิดปกติ", backgroundColor: "#ef9a9a", data: abnormalPercent, stack: 'stack1', order: 2 }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'ความน่าเชื่อถือของระบบ' },
+            datalabels: {
+              formatter: (value) => value > 0 ? `${value}%` : '',
+              color: '#000',
+              font: { weight: 'bold', size: 14 },
+              anchor: 'center', align: 'center'
+            },
+            legend: {
+              position: 'top',
+              labels: {
+                generateLabels: (chart) => {
+                  const items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                  items.push({
+                    text: 'เป้าหมายต้องมากกว่า 90%',
+                    fillStyle: 'rgba(0,0,0,0)', strokeStyle: '#6d4c41', lineWidth: 2, borderDash: [6, 3]
+                  });
+                  return items;
+                }
+              }
+            },
+            annotation: {
+              annotations: {
+                targetLine: {
+                  type: 'line', yMin: 80, yMax: 80, borderColor: '#6d4c41', borderWidth: 2, borderDash: [6, 3]
+                }
+              }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, max: 100, title: { display: true, text: '% ต่อเครื่อง' }},
+            x: { title: { display: true, text: 'เครื่องจักร' }, stacked: true }
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+
+      const pieChart = new Chart(pieOverall, {
+        type: 'pie',
+        data: {
+          labels: ["ปกติ", "ผิดปกติ"],
+          datasets: [{ data: [normal, abnormal], backgroundColor: ["#4557bd", "#cf4444c4"] }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: ' ภาพรวม' },
+            legend: { position: 'top' },
+            datalabels: {
+              formatter: (value) => `${((value / total) * 100).toFixed(1)}%`,
+              color: '#fff',
+              font: { weight: 'bold', size: 14 }
+            }
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+
+      const monthLabels = [...new Set(zoneAll.map(d => d["เดือน"]))].sort()
+      const monthCounts = monthLabels.map(m => zoneAll.filter(d => d["เดือน"] === m).length)
+
+      const lineZone = new Chart(lineZoneSummary, {
+        type: 'line',
+        data: {
+          labels: monthLabels,
+          datasets: [{
+            label: `จำนวนครั้งในโซน ${zone}`,
+            data: monthCounts,
+            borderColor: '#43a047',
+            backgroundColor: '#c8e6c9',
+            fill: false,
+            tension: 0.3
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'จำนวนการตรวจเช็คสะสม (รายปี)' },
+            legend: { position: 'bottom' },
+            datalabels: {
+              display: true,
+              formatter: (value) => value,
+              color: '#000',
+              font: { weight: 'bold', size: 14 },
+              align: 'top'
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: 'จำนวนครั้ง' } },
+            x: { title: { display: true, text: 'เดือน ' } }
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+
+      charts.push(barChart, pieChart, lineZone);
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
